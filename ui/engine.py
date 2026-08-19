@@ -419,6 +419,79 @@ def generate_skill(
     return skill_dir
 
 
+STOPWORDS = {
+    "the", "a", "an", "and", "or", "of", "in", "on", "to", "for", "is", "are", "was", "were",
+    "what", "which", "when", "where", "who", "how", "why", "does", "do", "did", "it", "its",
+    "this", "that", "i", "you", "we", "they", "be", "by", "with", "from", "as", "at", "about",
+    "can", "should", "would", "could", "if", "then", "than", "not", "no", "my", "me", "your",
+    "him", "her", "his", "their", "there", "here", "has", "have", "had", "will",
+}
+
+
+def search_skill(skill_dir: Path, query: str, max_hits: int = 12) -> list[dict]:
+    terms = [t for t in re.split(r"\W+", query.lower()) if t and t not in STOPWORDS]
+    if not terms:
+        return []
+    results: dict[str, dict] = {}
+    for md in sorted(skill_dir.rglob("*.md")):
+        rel = str(md.relative_to(skill_dir))
+        try:
+            text = md.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        low = text.lower()
+        count = sum(low.count(t) for t in terms)
+        if not count:
+            continue
+        entry = {"rel": rel, "path": str(md), "count": count, "snippets": []}
+        for term in terms:
+            start = 0
+            for _ in range(2):
+                idx = low.find(term, start)
+                if idx == -1:
+                    break
+                entry["snippets"].append(text[max(0, idx - 200) : idx + 300].strip())
+                start = idx + len(term)
+        results[rel] = entry
+    return sorted(results.values(), key=lambda r: (-r["count"], r["rel"]))[:max_hits]
+
+
+def ask_context(skill_dir: Path, query: str, max_files: int = 3, max_chars: int = 16000) -> tuple[str, list[str]]:
+    hits = search_skill(skill_dir, query, max_hits=20)
+    parts: list[str] = []
+    used: list[str] = []
+    budget = max_chars
+    for hit in hits:
+        if len(used) >= max_files or budget <= 0:
+            break
+        text = Path(hit["path"]).read_text(encoding="utf-8", errors="replace")
+        parts.append(f"### FILE: {hit['rel']}\n{text[:budget]}")
+        used.append(hit["rel"])
+        budget -= len(text)
+    if not parts:
+        root = skill_dir / "SKILL.md"
+        if root.exists():
+            text = root.read_text(encoding="utf-8", errors="replace")
+            parts.append(f"### FILE: SKILL.md\n{text[:budget]}")
+            used.append("SKILL.md")
+    return "\n\n".join(parts), used
+
+
+def build_ask_prompt(skill_dir: Path, question: str) -> tuple[str, str, list[str]]:
+    context, used = ask_context(skill_dir, question)
+    system = (
+        "You are a book knowledge assistant. Answer questions using ONLY the provided book-skill files. "
+        "Use the author's exact terms, be precise, and cite the file (e.g. chapters/ch02-....md) for each claim. "
+        "If the files do not contain the answer, say so and suggest the closest related topic."
+    )
+    user = (
+        f"BOOK SKILL FILES (from skill \"{skill_dir.name}\"):\n\n"
+        f"{context}\n\n"
+        f"QUESTION:\n{question}"
+    )
+    return system, user, used
+
+
 def run_security_scan(skill_dir: Path) -> tuple[int, str]:
     scanner = REPO_ROOT / "tools" / "scan_generated_skill.py"
     proc = subprocess.run(

@@ -247,6 +247,7 @@ def render_generate_tab():
         st.success("Security scan passed")
 
     st.success(f"Skill created: {skill_dir}")
+    st.session_state.skill_dir = str(skill_dir)
     files = sorted(skill_dir.rglob("*"), key=lambda p: str(p))
     for f in files:
         if f.is_file():
@@ -271,6 +272,120 @@ def shutil_rmtree(path: Path) -> None:
     shutil.rmtree(path, ignore_errors=True)
 
 
+def detect_skill_dirs() -> list[str]:
+    found: list[str] = []
+    for raw in [st.session_state.get("workdir"), st.session_state.get("skills_home")]:
+        if not raw:
+            continue
+        root = Path(raw).expanduser()
+        if not root.exists():
+            continue
+        found += [
+            str(p) for p in sorted(root.iterdir()) if p.is_dir() and (p / "SKILL.md").exists()
+        ]
+    return sorted(set(found))
+
+
+def render_ask_tab():
+    st.header("3. Ask the book")
+    st.write("Search the generated skill's files, or ask the LLM a question grounded in the book content.")
+
+    detected = detect_skill_dirs()
+    c1, c2 = st.columns([3, 1])
+    skill_dir_str = c1.text_input(
+        "Skill directory",
+        value=st.session_state.get("skill_dir", ""),
+        placeholder="/home/george/Desktop/book_skill_work/early_greek_philosophy",
+    )
+    if detected and not skill_dir_str:
+        skill_dir_str = c2.selectbox(
+            "Or pick a detected skill",
+            detected,
+            format_func=lambda p: Path(p).name,
+        )
+    skill_dir = Path(skill_dir_str).expanduser() if skill_dir_str.strip() else None
+    if not skill_dir or not (skill_dir / "SKILL.md").exists():
+        st.info("Point to a generated skill directory (must contain SKILL.md).")
+        return
+    st.caption(f"Skill: **{skill_dir.name}**")
+
+    st.subheader("Search")
+    query = st.text_input("Keywords (space-separated, matched against all .md files)", key="ask_query")
+    if st.button("Search", disabled=not query.strip(), key="ask_search_btn"):
+        with st.spinner("Searching..."):
+            hits = engine.search_skill(skill_dir, query.strip())
+        st.session_state.search_results = (str(skill_dir), query.strip(), hits)
+    cached = st.session_state.get("search_results")
+    if cached and cached[0] == str(skill_dir) and cached[1] == query.strip() and query.strip():
+        _, _, hits = cached
+        if not hits:
+            st.warning("No matches found.")
+        for hit in hits:
+            st.markdown(f"**{hit['rel']}** — {hit['count']} match{'es' if hit['count'] != 1 else ''}")
+            for snippet in hit["snippets"][:2]:
+                st.code(snippet, language="markdown")
+            st.divider()
+
+    st.subheader("Ask the LLM")
+    with st.form("ask_form"):
+        c3, c4 = st.columns(2)
+        with c3:
+            provider = st.selectbox(
+                "Provider",
+                ["openai", "anthropic"],
+                format_func=lambda p: {"openai": "OpenAI-compatible", "anthropic": "Anthropic"}[p],
+            )
+            model = st.text_input(
+                "Model",
+                value=st.session_state.get("model", ""),
+                placeholder="e.g. gpt-4o-mini, claude-sonnet-4-5, or your local model name",
+            )
+        with c4:
+            base_url = st.text_input(
+                "Base URL (OpenAI-compatible only)",
+                value=st.session_state.get("base_url", "http://localhost:8083/v1"),
+            )
+            api_key = st.text_input("API key (leave empty for local servers)", type="password")
+        question = st.text_area("Question", placeholder="e.g. What is the Logos framework and when should I use it?")
+        submitted = st.form_submit_button("Ask", type="primary")
+
+    if submitted:
+        if not question.strip():
+            st.warning("Please enter a question.")
+            return
+        model = (model or "").strip()
+        if not model:
+            st.error("Please set a model name.")
+            return
+        if provider == "anthropic" and not api_key:
+            st.error("Anthropic requires an API key.")
+            return
+        st.session_state.model = model
+        st.session_state.base_url = (base_url or "").strip()
+
+        llm = engine.LLM(provider, model, (base_url or "").strip(), (api_key or "").strip())
+        try:
+            system, user, used = engine.build_ask_prompt(skill_dir, question.strip())
+        except Exception as exc:
+            st.error(f"Could not build context: {exc}")
+            return
+        st.caption(f"Context files: {', '.join(used) or 'SKILL.md'}")
+        answer_box = st.empty()
+        accumulated = {"text": ""}
+
+        def on_delta(delta: str) -> None:
+            accumulated["text"] += delta
+            answer_box.markdown(accumulated["text"])
+
+        try:
+            with st.spinner("Thinking..."):
+                answer = llm.chat(system, user, on_delta=on_delta, max_tokens=2048)
+            if not accumulated["text"]:
+                answer_box.markdown(answer)
+        except Exception as exc:
+            st.error(f"Ask failed: {exc}")
+
+
 def render_setup_tab():
     st.header("Setup check")
     st.write("Reports which extractors are installed for every format and how to install what is missing.")
@@ -282,12 +397,14 @@ def render_setup_tab():
         log_box.code("\n".join(lines), language="text")
 
 
-tab_extract, tab_generate, tab_setup = st.tabs(
-    ["📖 Extract", "🧠 Generate skill", "🔧 Setup check"]
+tab_extract, tab_generate, tab_ask, tab_setup = st.tabs(
+    ["📖 Extract", "🧠 Generate skill", "💬 Ask the book", "🔧 Setup check"]
 )
 with tab_extract:
     render_extract_tab()
 with tab_generate:
     render_generate_tab()
+with tab_ask:
+    render_ask_tab()
 with tab_setup:
     render_setup_tab()
