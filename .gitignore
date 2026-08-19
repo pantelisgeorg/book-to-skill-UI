@@ -1,9 +1,24 @@
+# Python bytecode
 *.pyc
 __pycache__/
 
 # Agent session traces (Stone CLI) — never commit
 .stone/
 **/.stone/
+
+# Local session notes / logs — kept on disk, never committed
+sessions/
+
+# Python virtual environments
+.venv/
+venv/
+env/
+
+# Extraction work directories
+book_skill_work/
+
+# Streamlit runtime artifacts
+.streamlit/
 
 # PyPI packaging build directories
 dist/
@@ -17,7 +32,6 @@ uv.lock
 docs/superpowers/specs/
 
 # MkDocs: build output + pages assembled from README/SKILL at deploy time
-# (docs/index.md is a committed landing page, NOT assembled)
 site/
 docs/guide.md
 docs/skill-reference.md

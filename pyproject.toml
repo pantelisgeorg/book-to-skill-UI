@@ -19,6 +19,7 @@ pdf = ["pypdf", "pdfminer.six"]
 docx = ["python-docx"]
 rtf = ["striprtf"]
 technical = ["docling"]
+ui = ["streamlit", "openai", "anthropic"]
 all = [
     "ebooklib",
     "beautifulsoup4",
